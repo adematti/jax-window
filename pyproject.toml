@@ -1,0 +1,22 @@
+[build-system]
+requires = [
+    "setuptools>=61",
+    "wheel",
+    "setuptools_scm>=6.2",
+    "pip>=21.2",
+]
+
+[project]
+name = "jpower"
+authors = [{name = "Arnaud de Mattia"}, {name = "Patrick McDonald"}]
+description = "JAX-power power spectrum"
+version = "0.1.0"
+dependencies = ["jax", "jpower"]
+readme = "README.md"
+requires-python = ">=3.10"
+urls = {Repository = "https://github.com/adematti/jpower"}
+classifiers = ["Programming Language :: Python :: 3"]
+
+[tool.setuptools]
+packages = ["jpower"]
+
