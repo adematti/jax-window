@@ -37,7 +37,7 @@ class BoxFFTPower(object):
         k = jnp.sqrt(sum(kk.astype(dtype)**2 for kk in kvec))
 
         if compensate:
-            compensate = {'ngc': 1, 'cic': 2, 'tsc': 3, 'pcs': 4}.get(compensate, compensate)
+            compensate = {'ngc': 2, 'cic': 4, 'tsc': 6, 'pcs': 8}.get(compensate, compensate)
             for kk, cc in zip(kvec, cellsize):
                 power *= jnp.sinc(0.5 / np.pi * kk * cc)**-compensate
 
@@ -58,10 +58,10 @@ class BoxFFTPower(object):
 
         k /= nmodes
         power *= jnp.prod(cellsize / meshsize) / nmodes
-        self.k, self.power, self.nmodes, self.edges = k, power, nmodes, edges
+        self.k, self.power, self.nmodes, self.edges, self.cellsize = k, power, nmodes, edges, cellsize
 
     def tree_flatten(self):
-        return ({name: getattr(self, name) for name in ['k', 'power', 'nmodes', 'edges']},), {}
+        return ({name: getattr(self, name) for name in ['k', 'power', 'nmodes', 'edges', 'cellsize']},), {}
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -86,7 +86,7 @@ class BoxFFTPower(object):
 @register_pytree_node_class
 class SurveyFFTPower(BoxFFTPower):
 
-    def __init__(self, data, randoms, cellsize, edges, data2=None, randoms2=None, compensate=False, norm=None):
+    def __init__(self, data, randoms, cellsize, edges, data2=None, randoms2=None, compensate=False, norm=None, shotnoise_nonorm=0.):
 
         alpha = jnp.mean(data) / jnp.mean(randoms)
         field = data - alpha * randoms
@@ -103,4 +103,5 @@ class SurveyFFTPower(BoxFFTPower):
             field /= norm**0.5
             field2 /= norm**0.5
         super().__init__(field, cellsize, edges, field2=field2, compensate=compensate)
+        self.power -= shotnoise_nonorm / norm * jnp.prod(self.cellsize) / np.prod(field.shape)
         

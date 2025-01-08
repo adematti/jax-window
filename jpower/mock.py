@@ -60,7 +60,28 @@ class GaussianField(BaseDensity):
             field *= meshsize.prod()**0.5 / jnp.abs(field)
         self.density = 1. + jnp.fft.irfftn(field * pkmesh**0.5)
 
+    def read(self, positions):
+        positions = (positions % self.boxsize) * self.meshsize / self.boxsize
+        return cic_read(self.density, positions)
 
+
+@jit
+def cic_read(field, positions):
+
+    def wrap(idx):
+        return idx % jnp.array(field.shape)
+
+    fidx = positions
+    idx = jnp.floor(fidx).astype('i4')
+    dx = fidx - idx
+
+    values = 0.
+    for ishift in itertools.product(*([0, 1],) * 3):
+        ishift = np.array(ishift)
+        values += field[tuple(wrap(idx + ishift).T)] * jnp.prod(dx * (ishift == 1) + (1. - dx) * (ishift == 0), axis=-1)
+    return values
+
+    
 @jit
 def cic_paint(field, positions, values=1.):
     boxsize = jnp.array(field.shape)
@@ -76,7 +97,7 @@ def cic_paint(field, positions, values=1.):
         ishift = np.array(ishift)
         field = field.at[tuple(wrap(idx + ishift).T)].add(values * jnp.prod(dx * (ishift == 1) + (1. - dx) * (ishift == 0), axis=-1))
     return field
-    
+
 
 @register_pytree_node_class
 class SurveySelection(BaseDensity):
