@@ -7,16 +7,16 @@ requires = [
 ]
 
 [project]
-name = "jpower"
+name = "jaxwindow"
 authors = [{name = "Arnaud de Mattia"}, {name = "Patrick McDonald"}]
-description = "JAX-power power spectrum"
+description = "JAX-powered window function estimation"
 version = "0.1.0"
-dependencies = ["jax", "jpower"]
+dependencies = ["jax", "jaxwindow"]
 readme = "README.md"
 requires-python = ">=3.10"
-urls = {Repository = "https://github.com/adematti/jpower"}
+urls = {Repository = "https://github.com/adematti/jax-window"}
 classifiers = ["Programming Language :: Python :: 3"]
 
 [tool.setuptools]
-packages = ["jpower"]
+packages = ["jaxwindow"]
 
