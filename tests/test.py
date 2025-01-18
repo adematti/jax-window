@@ -1,13 +1,14 @@
 from pathlib import Path
+from functools import partial
 
 import numpy as np
 import jax
 from jax import numpy as jnp
 from jax import random
-
 from matplotlib import pyplot as plt
 
 from jaxpower import generate_gaussian_mesh, ParticleField, FKPField, compute_mesh_power, compute_fkp_power, compute_normalization, utils
+from jaxwindow import generate_anisotropic_gaussian_mesh
 
 
 dirname = Path('_tests')
@@ -23,11 +24,11 @@ def test_box_pk():
     from cosmoprimo.fiducial import DESI
     cosmo = DESI()
     pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.)
-    
+
     kin = jnp.geomspace(1e-3, 1e1, 1000)
     pkin = pk(kin)
     pkout = mock_box(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.))
-    
+
     ax = plt.gca()
     maskin = kin < pkout.edges[-1]
     ax.plot(kin[maskin], kin[maskin] * pkin[maskin], label='input')
@@ -42,7 +43,7 @@ def test_box_wmat():
     pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.)
     kin = jnp.geomspace(1e-3, 1e1, 200)
     pkin = pk(kin)
-    
+
     get_pk = lambda pkin, **kwargs: mock_box(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.), **kwargs)
     get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).power[0].real)(pkin)
     get_pk = jax.jit(get_pk, static_argnames=['unitary_amplitude'])
@@ -106,13 +107,13 @@ def test_survey_pk():
     from cosmoprimo.fiducial import DESI
     cosmo = DESI()
     pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.)
-    
+
     kin = jnp.geomspace(1e-3, 1e1, 1000)
     pkin = pk(kin)
     selection = gaussian_survey(paint=True)
     #pkout = mock_survey(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.), selection=selection)
     pkout = mock_survey_noise(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.))
-    
+
     ax = plt.gca()
     maskin = kin < pkout.edges[-1]
     ax.plot(kin[maskin], kin[maskin] * pkin[maskin], label='input')
@@ -165,7 +166,7 @@ def test_survey_wmat(npk=10, npkt=10):
     ax.set_ylabel(r'$k P(k)$ [$(\mathrm{Mpc}/h)^{2}$]')
     ax.legend(frameon=False)
     utils.savefig(dirname / 'survey_wmat.png')
-    
+
 
 def test_survey_wmat_noise(npk=10, npkt=10):
     from cosmoprimo.fiducial import DESI
@@ -210,13 +211,64 @@ def test_survey_wmat_noise(npk=10, npkt=10):
     utils.savefig(dirname / 'survey_wmat_noise.png')
 
 
+def test_misc():
+    from jaxwindow.mock import wigner3j_square
+
+    for ell1, ell2 in [(2, 2), (2, 4), (4, 4)]:
+        print(ell1, ell2, wigner3j_square(ell1, ell2, prefactor=False))
+
+
+def test_anisotropic(npk=10):
+
+    #from jax import config
+    #config.update('jax_enable_x64', True)
+
+    from cosmoprimo.fiducial import DESI
+    cosmo = DESI(engine='eisenstein_hu_nowiggle')
+    pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.)
+    kin = jnp.geomspace(1e-3, 1e1, 200)
+    pkin = pk(kin) * (1. + 0.2 * np.sin(kin / 0.006))
+    ells = (0, 2, 4)
+
+    f, b = 0.9, 1.5
+    pkb = b**2 * pkin
+    beta = f / b
+    poles = [(1. + 2. / 3. * beta + 1. / 5. * beta ** 2) * pkb,
+              0.8 * (4. / 3. * beta + 4. / 7. * beta ** 2) * pkb,
+              8. / 35 * beta ** 2 * pkb]
+
+    @partial(jax.jit, static_argnames=['los'])
+    def mock(seed, los='x', unitary_amplitude=True):
+        attrs = dict(boxsize=1000., boxcenter=(1e9, 0., 0.), meshsize=64)
+        mesh = generate_anisotropic_gaussian_mesh(kin, poles, los=los, seed=seed, unitary_amplitude=unitary_amplitude, **attrs)
+        edges = {'step': 0.01}
+        return compute_mesh_power(mesh, edges=edges, los={'local': 'firstpoint'}.get(los, los), ells=ells)
+
+    list_los = ['x', 'local']
+    list_color = ['C0', 'C1']
+
+    ax = plt.gca()
+    ax.plot([], [], color='k', label='input')
+    for los, color in zip(list_los, list_color):
+        pks = [mock(random.key(i * 42), los=los) for i in range(npk)]
+        power = pks[0]
+        pk_mean, pk_std = np.mean([power.power.real for power in pks], axis=0), np.std([power.power.real for power in pks], axis=0) / npk**0.5
+        ax.plot([], [], color=color, label=los)
+        for ill, ell in enumerate(ells):
+            ax.fill_between(power.k, power.k * (pk_mean - pk_std)[ill], power.k * (pk_mean + pk_std)[ill], color=color, lw=0.5, alpha=0.8)
+    maskin = (kin >= power.edges[0]) & (kin <= power.edges[-1])
+    for ill, ell in enumerate(ells):
+        ax.plot(kin[maskin], kin[maskin] * poles[ill][maskin], color='k', linestyle='--')
+    ax.legend()
+    plt.show()
+
+
+
 if __name__ == '__main__':
 
-    test_survey_pk()
-    exit()
-    
     test_box_pk()
     test_box_wmat()
     test_survey_pk()
     test_survey_wmat(npk=10, npkt=10)
     test_survey_wmat_noise(npk=10, npkt=10)
+    test_anisotropic(npk=10)
