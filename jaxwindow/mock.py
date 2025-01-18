@@ -74,6 +74,7 @@ def generate_anisotropic_gaussian_mesh(k, poles: dict[Callable], los: str='x',
         # The mesh for ell = 2
         mesh2 = meshs[0] * _interp(l10) + meshs[1] * _interp(l11)
         # Now let's take care of L2
+        del meshs
 
         # The Fourier-space grid
         khat = [_safe_divide(kk, knorm) for kk in kvec]
