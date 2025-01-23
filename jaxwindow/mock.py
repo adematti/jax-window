@@ -5,21 +5,25 @@ from jax import numpy as jnp
 from collections.abc import Callable
 from typing import Union
 
-from jaxpower.mesh import RealMeshField, staticarray
-from jaxpower.mock import _get_ndim
+from jaxpower.mesh import RealMeshField, MeshAttrs
 from jaxpower.power import _get_los_vector, legendre, get_real_Ylm
 
 
 
-def generate_acceptable_poles(power0, seed=42):
+def generate_acceptable_poles(power0, alpha1=None, alpha2=None, seed=42):
     if isinstance(seed, int):
         seed = random.key(seed)
     seeds = random.split(seed)
-    power4 = random.uniform(seeds[0], minval=0.05, maxval=0.1) * power0  # hexadecapole ~ 1 / 10 of monopole
+    if alpha1 is None:
+        alpha1 = random.uniform(seeds[0], minval=0.05, maxval=0.1)
+    power4 = alpha1 * power0  # hexadecapole ~ 1 / 10 of monopole
     a2sq = 35. / 18. * power4
     a0sq = power0 - 1. / 5. * a2sq
-    minval = - 1. / 7. * a2sq / (a0sq * a2sq)**0.5
-    power2 = 2 * random.uniform(seeds[1], minval=minval, maxval=1.) * (a0sq * a2sq)**0.5 + 2. / 7. * a2sq
+    minval = np.max(- 1. / 7. * a2sq / (a0sq * a2sq)**0.5)
+    if alpha2 is None:
+        alpha2 = random.uniform(seeds[1], minval=minval, maxval=1.)
+    alpha2 = np.clip(alpha2, minval, 1.)
+    power2 = 2 * alpha2 * (a0sq * a2sq)**0.5 + 2. / 7. * a2sq
     return [power0, power2, power4]
 
 
@@ -34,18 +38,16 @@ def generate_anisotropic_gaussian_mesh(k, poles: dict[Callable], los: str='x',
     if isinstance(seed, int):
         seed = random.key(seed)
 
-    ndim = _get_ndim(boxsize, meshsize, boxcenter)
-    shape = staticarray.fill(meshsize, ndim)
+    attrs = MeshAttrs(meshsize=meshsize, boxsize=boxsize, boxcenter=boxcenter)
 
     def _safe_divide(num, denom):
         with np.errstate(divide='ignore', invalid='ignore'):
             return jnp.where(denom == 0., 0., num / denom)
 
-
     if los == 'local':
         seeds = random.split(seed)
-        meshs = [RealMeshField(random.normal(seed, shape), boxsize=boxsize, boxcenter=boxcenter).r2c() for seed in seeds]
-        meshsize, cellsize = meshs[0].meshsize, meshs[0].cellsize
+        meshs = [RealMeshField(random.normal(seed, attrs.meshsize), attrs=attrs).r2c() for seed in seeds]
+        meshsize, cellsize = attrs.meshsize, attrs.cellsize
         if unitary_amplitude:
             for imesh, mesh in enumerate(meshs):
                 meshs[imesh] *= meshsize.prod()**0.5 / jnp.abs(mesh.value)
@@ -78,7 +80,7 @@ def generate_anisotropic_gaussian_mesh(k, poles: dict[Callable], los: str='x',
 
         # The Fourier-space grid
         khat = [_safe_divide(kk, knorm) for kk in kvec]
-        del knorm
+        del knorm, kvec
 
         # The real-space grid
         xhat = mesh.coords(sparse=True)
@@ -88,14 +90,14 @@ def generate_anisotropic_gaussian_mesh(k, poles: dict[Callable], los: str='x',
 
         ell = 2
         Ylms = [get_real_Ylm(ell, m) for m in range(-ell, ell + 1)]
-        mesh += 4. * np.pi / (2 * ell + 1) * sum((mesh2 * Ylm(*khat)).c2r() * Ylm(*xhat) for Ylm in Ylms)  # total mesh, mesh0 + mesh2 * L2(mu)
+        mesh += 4. * jnp.pi / (2 * ell + 1) * sum((mesh2 * Ylm(*khat)).c2r() * Ylm(*xhat) for Ylm in Ylms)  # total mesh, mesh0 + mesh2 * L2(mu)
 
         return mesh
 
     else:
-        vlos = _get_los_vector(los, ndim=ndim)
-        mesh = RealMeshField(random.normal(seed, shape), boxsize=boxsize, boxcenter=boxcenter).r2c()
-        meshsize, cellsize = mesh.meshsize, mesh.cellsize
+        vlos = _get_los_vector(los, ndim=len(attrs.meshsize))
+        mesh = RealMeshField(random.normal(seed, attrs.meshsize), attrs=attrs).r2c()
+        meshsize, cellsize = attrs.meshsize, attrs.cellsize
 
         def kernel(value, kvec):
             knorm = jnp.sqrt(sum(kk**2 for kk in kvec)).ravel()

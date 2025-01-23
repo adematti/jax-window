@@ -1,5 +1,8 @@
+import os
 from pathlib import Path
 from functools import partial
+
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1.' # NOTE: jax preallocates GPU (default 75%)
 
 import numpy as np
 import jax
@@ -7,7 +10,7 @@ from jax import numpy as jnp
 from jax import random
 from matplotlib import pyplot as plt
 
-from jaxpower import generate_gaussian_mesh, ParticleField, FKPField, compute_mesh_power, compute_fkp_power, compute_normalization, utils
+from jaxpower import generate_gaussian_mesh, ParticleField, FKPField, compute_mesh_power, compute_fkp_power, compute_normalization, PowerSpectrumMultipoles, utils
 from jaxwindow import generate_anisotropic_gaussian_mesh
 
 
@@ -83,7 +86,6 @@ def mock_survey(power, selection, unitary_amplitude=True, seed=random.key(42), *
     # Multiply Gaussian field with survey selection function, then compute power spectrum
     norm = compute_normalization(selection, selection)
     return compute_mesh_power(mesh * selection, edges=edges).clone(norm=norm)
-
 
 def mock_survey_noise(power, boxsize=2000., meshsize=128, size=int(1e6), seed=random.key(42), unitary_amplitude=True):
     # Generate Gaussian field
@@ -263,8 +265,115 @@ def test_anisotropic(npk=10):
     plt.show()
 
 
+def test_misc():
+    from tqdm import trange
+    from cosmoprimo.fiducial import DESI
+    cosmo = DESI()
+    pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.)
+    kin = jnp.geomspace(1e-3, 1e1, 200)
+    pkin = pk(kin)
+    boxsize, meshsize = 1000., 64
+    selection = gaussian_survey(boxsize=boxsize, meshsize=meshsize, boxcenter=0., paint=True)
+
+    def delta_w(delta_i):
+        delta_w = delta_i.c2r()
+        delta_w *= selection
+        return delta_w.r2c()
+
+    power = lambda k: jnp.interp(k, kin, pkin, left=0., right=0.)
+    pkvec = lambda kvec: power(sum(kk**2 for kk in kvec)**0.5)
+
+    if False:
+        @jax.jit
+        def get_pk(seed):
+            mesh = generate_gaussian_mesh(pkvec, boxsize=selection.boxsize, meshsize=selection.meshsize, boxcenter=selection.boxcenter, seed=seed)
+            edges = {'step': 0.01}
+            return compute_mesh_power(mesh, edges=edges)
+    
+        get_pk(random.key(42))
+        npk = 10
+        with trange(npk) as t:
+            for imock in t:
+                get_pk(random.key(imock + 42))
+    """
+    @jax.jit
+    def mock(pkin, seed):
+        power = lambda k: jnp.interp(k, kin, pkin, left=0., right=0.)
+        pkvec = lambda kvec: power(sum(kk**2 for kk in kvec)**0.5)
+        mesh = generate_gaussian_mesh(pkvec, boxsize=selection.boxsize, meshsize=selection.meshsize, boxcenter=selection.boxcenter, seed=seed).r2c()
+        P = mesh.clone(value=pkvec(mesh.coords(sparse=True)).astype(mesh.dtype) / mesh.cellsize.prod())
+        power = jax.jvp(delta_w, (mesh,), (jax.jvp(delta_w, (mesh,), (P,))[1].conj(),))[1]
+        edges = jnp.arange(0., np.min(np.pi / power.cellsize), 0.01)
+        khat = power.coords(sparse=True)
+        knorm = jnp.sqrt(sum(kk**2 for kk in khat))
+        ibin = jnp.digitize(knorm, edges)
+        nmodes = jnp.full_like(power.value, 2, dtype='i4')
+        nmodes = nmodes.at[..., 0].set(1)
+        if power.shape[-1] % 2 == 0:
+            nmodes = nmodes.at[..., -1].set(1)
+        rdtype = power.real.dtype
+        norm = jnp.prod(power.meshsize, dtype=rdtype) / jnp.prod(power.cellsize, dtype=rdtype)
+        ibin, nmodes = ibin.ravel(), nmodes.ravel()
+        power = power.ravel() * nmodes
+        nmodes = jnp.bincount(ibin, weights=nmodes, length=len(edges) + 1)[1:-1]
+        return jnp.bincount(ibin, weights=power, length=len(edges) + 1)[1:-1] / nmodes / norm
+
+    wmat = mock(pkin, random.key(42))
+
+    npk = 10
+    with trange(npk) as t:
+        for imock in t:
+            wmat2 = mock(pkin, random.key(42 * imock))
+            assert np.allclose(wmat2, wmat)
+    """
+    selectionk = selection.r2c()
+    norm = compute_normalization(selection, selection)
+    
+    def delta_w(delta_i):
+        # The forward model for the window product
+        delta_w = delta_i.c2r()
+        delta_w *= selection
+        return delta_w.r2c()
+
+    @jax.jit
+    def mock_survey_average(pkin, seed):
+        power = lambda k: jnp.interp(k, kin, pkin, left=0., right=0.)
+        pkvec = lambda kvec: power(sum(kk**2 for kk in kvec)**0.5)
+        P = selectionk.clone(value=pkvec(selectionk.coords(sparse=True)).astype(selectionk.dtype) / selectionk.cellsize.prod())
+        #mesh = selectionk  # can be anything
+        mesh = generate_gaussian_mesh(pkvec, boxsize=selection.boxsize, meshsize=selection.meshsize, boxcenter=selection.boxcenter, seed=seed).r2c()
+        power = jax.jvp(delta_w, (mesh,), (jax.jvp(delta_w, (mesh,), (P,))[1].conj(),))[1]
+        #power = mesh * mesh.conj()
+        edges = np.arange(0., np.min(np.pi / power.cellsize), 0.005)
+        kvec = power.coords(sparse=True)
+        knorm = jnp.sqrt(sum(kk**2 for kk in kvec))
+        ibin = jnp.digitize(knorm, edges)
+        nmodes = jnp.full_like(power.value, 2, dtype='i4')
+        nmodes = nmodes.at[..., 0].set(1)
+        if power.shape[-1] % 2 == 0:
+            nmodes = nmodes.at[..., -1].set(1)
+        rdtype = power.real.dtype
+        #norm = jnp.prod(power.meshsize, dtype=rdtype) / jnp.prod(power.cellsize, dtype=rdtype)
+        ibin, nmodes = ibin.ravel(), nmodes.ravel()
+        knorm, power = knorm.ravel() * nmodes, power.ravel() * nmodes
+        nmodes = jnp.bincount(ibin, weights=nmodes, length=len(edges) + 1)[1:-1]
+        knorm = jnp.bincount(ibin, weights=knorm, length=len(edges) + 1)[1:-1] / nmodes
+        power_nonorm = jnp.bincount(ibin, weights=power, length=len(edges) + 1)[1:-1] / nmodes
+        return power_nonorm
+
+    pk0 = mock_survey_average(pkin, random.key(42))
+
+    npk = 10
+    with trange(npk) as t:
+        for imock in t:
+            pk = mock_survey_average(pkin, random.key(42 * imock))
+            assert np.allclose(pk, pk0)
+
 
 if __name__ == '__main__':
+
+    test_misc()
+    exit()
 
     test_box_pk()
     test_box_wmat()
