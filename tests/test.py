@@ -10,9 +10,7 @@ from jax import numpy as jnp
 from jax import random
 from matplotlib import pyplot as plt
 
-from jaxpower import generate_gaussian_mesh, ParticleField, FKPField, compute_mesh_power, compute_fkp_power, compute_normalization, PowerSpectrumMultipoles, utils
-from jaxwindow import generate_anisotropic_gaussian_mesh
-
+from jaxpower import generate_gaussian_mesh, generate_anisotropic_gaussian_mesh, ParticleField, FKPField, compute_mesh_power, compute_fkp_power, compute_normalization, PowerSpectrumMultipoles, utils
 
 dirname = Path('_tests')
 
@@ -33,9 +31,9 @@ def test_box_pk():
     pkout = mock_box(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.))
 
     ax = plt.gca()
-    maskin = kin < pkout.edges[-1]
+    maskin = kin < pkout.edges(projs=0)[-1]
     ax.plot(kin[maskin], kin[maskin] * pkin[maskin], label='input')
-    ax.plot(pkout.k, pkout.k * pkout.power[0].real, label='output')
+    ax.plot(pkout.x(projs=0), pkout.x(projs=0) * pkout.view(projs=0).real, label='output')
     ax.legend(frameon=False)
     utils.savefig(dirname / 'box_pk.png')
 
@@ -48,7 +46,7 @@ def test_box_wmat():
     pkin = pk(kin)
 
     get_pk = lambda pkin, **kwargs: mock_box(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.), **kwargs)
-    get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).power[0].real)(pkin)
+    get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).view(projs=0).real)(pkin)
     get_pk = jax.jit(get_pk, static_argnames=['unitary_amplitude'])
     get_wmat = jax.jit(get_wmat, static_argnames=['unitary_amplitude'])
 
@@ -57,12 +55,12 @@ def test_box_wmat():
     pk = get_pk(pkin, seed=seed)
     pkt = get_wmat(pkin, seed=seed).dot(pkin)
     pkt_km3 = get_wmat(kin**(-3), seed=seed).dot(pkin)
-    k, edges = pk.k, pk.edges
+    k, edges = pk.x(projs=0), pk.edges(projs=0)
 
     ax = plt.gca()
     maskin = kin < edges[-1]
     ax.plot(kin[maskin], kin[maskin] * pkin[maskin], label='input $P_i$')
-    ax.plot(k, k * pk.power[0].real, label='$P_o(k)$')
+    ax.plot(k, k * pk.view(projs=0).real, label='$P_o(k)$')
     ax.plot(k, k * pkt, label='$dP_o/dP_i \cdot P_i$')
     ax.plot(k, k * pkt_km3, label='$dP_o/dP_i | k^{-3} \cdot P_i$')
     ax.set_xlabel(r'$k$ [$h/\mathrm{Mpc}$]')
@@ -117,9 +115,9 @@ def test_survey_pk():
     pkout = mock_survey_noise(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.))
 
     ax = plt.gca()
-    maskin = kin < pkout.edges[-1]
+    maskin = kin < pkout.edges(projs=0)[-1]
     ax.plot(kin[maskin], kin[maskin] * pkin[maskin], label='input')
-    ax.plot(pkout.k, pkout.k * pkout.power[0].real, label='output')
+    ax.plot(pkout.x(projs=0), pkout.x(projs=0) * pkout.view(projs=0).real, label='output')
     ax.legend(frameon=False)
     utils.savefig(dirname / 'survey_pk.png')
 
@@ -132,7 +130,7 @@ def test_survey_wmat(npk=10, npkt=10):
     pkin = pk(kin)
     selection = gaussian_survey(paint=True)
     get_pk = lambda pkin, **kwargs: mock_survey(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.), selection, **kwargs)
-    get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).power[0].real)(pkin)
+    get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).view(projs=0).real)(pkin)
     get_pk = jax.jit(get_pk, static_argnames=['unitary_amplitude'])
     get_wmat = jax.jit(get_wmat, static_argnames=['unitary_amplitude'])
 
@@ -152,8 +150,8 @@ def test_survey_wmat(npk=10, npkt=10):
             pkts.append(wmat.dot(pkin))
             pkts_km3.append(wmat_km3.dot(pkin))
 
-    k, edges = pks[0].k, pks[0].edges
-    pk_mean, pk_std = np.mean([pk.power[0].real for pk in pks], axis=0), np.std([pk.power[0].real for pk in pks], axis=0) / npk**0.5
+    k, edges = pks[0].x(projs=0), pks[0].edges(projs=0)
+    pk_mean, pk_std = np.mean([pk.view(projs=0).real for pk in pks], axis=0), np.std([pk.view(projs=0).real for pk in pks], axis=0) / npk**0.5
     pkt_mean, pkt_std = np.mean(pkts, axis=0), np.std(pkts, axis=0) / npkt**0.5
     pkt_km3_mean, pkt_km3_std = np.mean(pkts_km3, axis=0), np.std(pkts_km3, axis=0) / npkt**0.5
 
@@ -177,7 +175,7 @@ def test_survey_wmat_noise(npk=10, npkt=10):
     kin = jnp.geomspace(1e-3, 1e1, 200)
     pkin = pk(kin)
     get_pk = lambda pkin, **kwargs: mock_survey_noise(lambda k: jnp.interp(k, kin, pkin, left=0., right=0.), **kwargs)
-    get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).power[0].real)(pkin)
+    get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).view(projs=0).real)(pkin)
 
     from tqdm import trange
     pks, pkts, pkts_km3 = [], [], []
@@ -195,8 +193,8 @@ def test_survey_wmat_noise(npk=10, npkt=10):
             pkts.append(wmat.dot(pkin))
             pkts_km3.append(wmat_km3.dot(pkin))
 
-    k, edges = pks[0].k, pks[0].edges
-    pk_mean, pk_std = np.mean([pk.power[0].real for pk in pks], axis=0), np.std([pk.power[0].real for pk in pks], axis=0) / npk**0.5
+    k, edges = pks[0].x(projs=0), pks[0].edges(projs=0)
+    pk_mean, pk_std = np.mean([pk.view(projs=0).real for pk in pks], axis=0), np.std([pk.view(projs=0).real for pk in pks], axis=0) / npk**0.5
     pkt_mean, pkt_std = np.mean(pkts, axis=0), np.std(pkts, axis=0) / npkt**0.5
     pkt_km3_mean, pkt_km3_std = np.mean(pkts_km3, axis=0), np.std(pkts_km3, axis=0) / npkt**0.5
 
@@ -254,11 +252,11 @@ def test_anisotropic(npk=10):
     for los, color in zip(list_los, list_color):
         pks = [mock(random.key(i * 42), los=los) for i in range(npk)]
         power = pks[0]
-        pk_mean, pk_std = np.mean([power.power.real for power in pks], axis=0), np.std([power.power.real for power in pks], axis=0) / npk**0.5
+        pk_mean, pk_std = np.mean([power.view().real for power in pks], axis=0), np.std([power.view().real for power in pks], axis=0) / npk**0.5
         ax.plot([], [], color=color, label=los)
         for ill, ell in enumerate(ells):
-            ax.fill_between(power.k, power.k * (pk_mean - pk_std)[ill], power.k * (pk_mean + pk_std)[ill], color=color, lw=0.5, alpha=0.8)
-    maskin = (kin >= power.edges[0]) & (kin <= power.edges[-1])
+            ax.fill_between(power.x(projs=ell), power.x(projs=ell) * (pk_mean - pk_std)[ill], power.x(projs=ell) * (pk_mean + pk_std)[ill], color=color, lw=0.5, alpha=0.8)
+    maskin = (kin >= power.edges(projs=0)[0]) & (kin <= power.edges(projs=0)[-1])
     for ill, ell in enumerate(ells):
         ax.plot(kin[maskin], kin[maskin] * poles[ill][maskin], color='k', linestyle='--')
     ax.legend()
@@ -289,7 +287,7 @@ def test_misc():
             mesh = generate_gaussian_mesh(pkvec, boxsize=selection.boxsize, meshsize=selection.meshsize, boxcenter=selection.boxcenter, seed=seed)
             edges = {'step': 0.01}
             return compute_mesh_power(mesh, edges=edges)
-    
+
         get_pk(random.key(42))
         npk = 10
         with trange(npk) as t:
@@ -328,7 +326,7 @@ def test_misc():
     """
     selectionk = selection.r2c()
     norm = compute_normalization(selection, selection)
-    
+
     def delta_w(delta_i):
         # The forward model for the window product
         delta_w = delta_i.c2r()

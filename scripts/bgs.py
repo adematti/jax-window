@@ -129,7 +129,7 @@ def generate_gaussian_mesh_mocks(nmocks=100):
         return compute_mesh_power(mesh * selection, edges=edges, ells=ells, los='firstpoint').clone(norm=norm)
 
     get_pk = lambda pkin, **kwargs: mock(pkin, **kwargs)
-    #get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).power.real)(pkin)
+    #get_wmat = lambda pkin, **kwargs: jax.jacrev(lambda pkin: get_pk(pkin, **kwargs).view())(pkin)
     get_wmat = lambda pkin, **kwargs: jax.jacfwd(lambda pkin: get_pk(pkin, **kwargs))(pkin)
     get_pk = jax.jit(get_pk)
     get_wmat = jax.jit(get_wmat)
@@ -157,4 +157,3 @@ if __name__ == '__main__':
     #save_selection_mesh()
     #fit_mock_power(plot=True)
     generate_gaussian_mesh_mocks(nmocks=100)
-    
