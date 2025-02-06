@@ -237,10 +237,18 @@ def test_anisotropic(npk=10):
               0.8 * (4. / 3. * beta + 4. / 7. * beta ** 2) * pkb,
               8. / 35 * beta ** 2 * pkb]
 
+    def make_callable(poles):
+        toret = {}
+        def get_fun(ill):
+            return lambda k: jnp.interp(k, kin, poles[ill], left=0., right=0.)
+        for ill, ell in enumerate(ells):
+            toret[ell] = get_fun(ill)
+        return toret
+
     @partial(jax.jit, static_argnames=['los'])
     def mock(seed, los='x', unitary_amplitude=True):
         attrs = dict(boxsize=1000., boxcenter=(1e9, 0., 0.), meshsize=64)
-        mesh = generate_anisotropic_gaussian_mesh(kin, poles, los=los, seed=seed, unitary_amplitude=unitary_amplitude, **attrs)
+        mesh = generate_anisotropic_gaussian_mesh(make_callable(poles), los=los, seed=seed, unitary_amplitude=unitary_amplitude, **attrs)
         edges = {'step': 0.01}
         return compute_mesh_power(mesh, edges=edges, los={'local': 'firstpoint'}.get(los, los), ells=ells)
 
@@ -369,9 +377,6 @@ def test_misc():
 
 
 if __name__ == '__main__':
-
-    test_misc()
-    exit()
 
     test_box_pk()
     test_box_wmat()
