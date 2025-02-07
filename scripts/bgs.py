@@ -8,8 +8,7 @@ from jax import random
 
 from cosmoprimo.fiducial import DESI
 from jaxpower import (RealMeshField, ParticleField, FKPField,
-compute_mesh_power, compute_fkp_power, compute_normalization, setup_logging, utils)
-from jaxwindow.mock import generate_anisotropic_gaussian_mesh
+compute_mesh_power, compute_fkp_power, generate_anisotropic_gaussian_mesh, compute_normalization, setup_logging, utils)
 
 
 ells = (0, 2, 4)
@@ -85,25 +84,27 @@ def fit_mock_power(klim=(0.02, 0.1, 0.005), plot=False):
 
     kin = jnp.geomspace(1e-3, 1e1, 200)
     poles = jnp.array(generate_acceptable_poles(ratio0 * pk_cosmo(kin), alpha1=popt[0], alpha2=popt[1]))
+    poles = BinnedStatistic(x=(kin,) * len(ells), value=tuple(poles), projs=ells)
 
     if plot:
         from matplotlib import pyplot as plt
         ax = plt.gca()
-        maskin = (kin >= klim[0]) & (kin < klim[1])
+        spoles = poles.select(xlim=klim)
         ax.plot([], [], color='C0', label='box power')
         ax.plot([], [], color='C1', label='"fitted" power')
         for ill, ell in enumerate(ells):
             ax.plot(ko, ko * mean[ill], color='C0')
-            ax.plot(kin[maskin], kin[maskin] * poles[ill, maskin], color='C1')
+            ki = spoles.x(projs=ell)
+            ax.plot(ki, ki * spoles.view(projs=ell), color='C1')
         ax.legend(frameon=False)
         utils.savefig(plot_dir / 'poles.png')
-    return kin, poles
+    return poles
 
 
 def generate_gaussian_mesh_mocks(nmocks=100):
     selection = RealMeshField.load(get_fn(base='selection_mesh'))
-    kin, poles = fit_mock_power()
-    np.save(get_fn(base='pkin'), {'k': kin, 'power': poles})
+    poles = fit_mock_power()
+    poles.save(get_fn(base='pkin'))
 
     def mock(poles, selection, unitary_amplitude=True, seed=random.key(42)):
         # Generate Gaussian field
@@ -148,12 +149,43 @@ def generate_gaussian_mesh_mocks(nmocks=100):
             #np.save(get_fn(base='wmat', imock=imock), wmat)
 
 
+def generate_gaussian_mocks(nmocks=10):
+    selection = RealMeshField.load(get_fn(base='selection_mesh'))
+    poles = fit_mock_power()
+    poles.save(get_fn(base='pkin'))
+    edges = {'step': 0.01}
+    norm = compute_normalization(selection, selection)
+
+    def make_callable(poles):
+        toret = {}
+        def get_fun(ill):
+            return lambda k: jnp.interp(k, kin, poles[ill], left=0., right=0.)
+        for ill, ell in enumerate(ells):
+            toret[ell] = get_fun(ill)
+        return toret
+
+    def gaussian_mesh(poles, selection, unitary_amplitude=True, seed=random.key(42)):
+        # Generate Gaussian field
+        mesh = generate_anisotropic_gaussian_mesh(poles, unitary_amplitude=unitary_amplitude, boxsize=selection.boxsize, meshsize=selection.meshsize, boxcenter=selection.boxcenter, los='local', seed=seed)
+        return mesh
+
+    def mock_control_variate(mesh, selection):
+        return mesh * selection
+
+    def mock_realistic(mesh, selection):
+        
+
+    def compute_power(mesh):
+        # Multiply Gaussian field with survey selection function, then compute power spectrum
+        return compute_mesh_power(mesh * selection, edges=edges, ells=ells, los='firstpoint').clone(norm=norm)
+
+
 if __name__ == '__main__':
 
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1.' # NOTE: jax preallocates GPU (default 75%)
 
     setup_logging()
     utils.mkdir(data_dir)
-    #save_selection_mesh()
-    #fit_mock_power(plot=True)
-    generate_gaussian_mesh_mocks(nmocks=100)
+    save_selection_mesh()
+    fit_mock_power(plot=True)
+    #generate_gaussian_mocks(nmocks=100)
