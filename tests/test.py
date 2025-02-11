@@ -376,6 +376,86 @@ def test_misc():
             assert np.allclose(pk, pk0)
 
 
+def test_bspline():
+    from matplotlib import pyplot as plt
+    from scipy import interpolate
+    xp = np.linspace(0., 0.2, 100)
+    yp = np.linspace(0., 0.2, 300)
+
+    def func(x, y):
+        sigma = 0.2 * np.std(yp)
+        return (1. + x**2) * np.exp(-(y - x)**2 / 2 / sigma)
+
+    xx, yy, zz = [], [], []
+    for x in xp[::3]:
+        for y in yp:
+            xx.append(x)
+            yy.append(y - x)
+            zz.append(func(x, y))
+    tck = interpolate.bisplrep(xx, yy, zz)
+    #tx = xp[::10]
+    #ty = yp[1:-3:10] - xp[len(xp) // 2]
+    #spline = interpolate.LSQBivariateSpline(x=xx, y=yy, z=zz, tx=tx, ty=ty)
+    xe, ye = np.meshgrid(xp, yp, indexing='ij')
+    fig, lax = plt.subplots(nrows=1, ncols=2, sharey=True)
+    lax[0].pcolormesh(xp, yp, func(xe, ye).T)
+    #lax[1].pcolormesh(xp, yp, spline(xe, ye, grid=False).T)
+    tmp = np.array([interpolate.bisplev(xx, yp - xx, tck) for xx in xp])
+    lax[1].pcolormesh(xp, yp, tmp.T)
+    plt.show()
+
+
+def test_window_matrix_estimator():
+    from jaxpower import compute_mean_mesh_power, BinnedStatistic
+    from jaxwindow import WindowMatrixEstimator
+    from cosmoprimo.fiducial import DESI
+
+    cosmo = DESI(engine='eisenstein_hu_nowiggle')
+    pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.)
+    kin = jnp.geomspace(1e-3, 1e1, 200)
+    pkin = pk(kin) * (1. + 0.2 * np.sin(kin / 0.006))
+    ells = (0, 2, 4)
+
+    f, b = 0.9, 1.5
+    pkb = b**2 * pkin
+    beta = f / b
+    poles = [(1. + 2. / 3. * beta + 1. / 5. * beta ** 2) * pkb,
+              0.8 * (4. / 3. * beta + 4. / 7. * beta ** 2) * pkb,
+              8. / 35 * beta ** 2 * pkb]
+    theory = BinnedStatistic(x=(kin,) * len(ells), value=poles, projs=ells)
+
+    boxsize, meshsize = 1000., 32
+    edges = {'step': 0.01}
+    selection = gaussian_survey(boxsize=boxsize, meshsize=meshsize, boxcenter=0., paint=True)
+    mod = 1. + 0.01 * (random.uniform(random.key(42), shape=selection.shape) - 0.5)  # modulation
+
+    def apply_selection(mesh, selection, cv=False):
+        if cv:
+            return mesh * selection
+        return mesh * selection * mod
+
+    def make_callable(theory):
+        def get_fun(proj): return lambda x: jnp.interp(x, theory.x(projs=proj), theory.view(projs=proj), left=0., right=0.)
+        return {proj: get_fun(proj) for proj in theory.projs}
+
+    def mock_mean(theory, selection, los='x'):
+        return compute_mean_mesh_power(selection, theory=make_callable(theory), edges=edges, los=los, ells=ells)
+
+    def mock_diff(theory, selection, los='x', seed=42, unitary_amplitude=True):
+        mesh = generate_anisotropic_gaussian_mesh(make_callable(theory), los=los, seed=seed,
+                                                  unitary_amplitude=unitary_amplitude, **selection.attrs)
+        toret = [compute_mesh_power(apply_selection(mesh, selection, cv=cv), edges=edges, los=los, ells=ells) for cv in [False, True]]
+        return toret[0].clone(value=toret[0].view() - toret[1].view())
+
+    estimator = WindowMatrixEstimator(theory=theory)
+    #estimator.cv(mock_mean, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
+    estimator.sample(mock_diff, nmocks=3, func_kwargs=dict(selection=selection))
+    #estimator.sample(mock_diff, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
+    wmat = estimator.mean(interp=False)
+    wmat = estimator.mean(interp=True)
+    std = estimator.std()
+
+
 if __name__ == '__main__':
 
     test_box_pk()
@@ -384,3 +464,4 @@ if __name__ == '__main__':
     test_survey_wmat(npk=10, npkt=10)
     test_survey_wmat_noise(npk=10, npkt=10)
     test_anisotropic(npk=10)
+    test_window_matrix_estimator()
