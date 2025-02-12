@@ -448,7 +448,7 @@ def test_window_matrix_estimator():
         return toret[0].clone(value=toret[0].view() - toret[1].view())
 
     estimator = WindowMatrixEstimator(theory=theory)
-    #estimator.cv(mock_mean, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
+    estimator.cv(mock_mean, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
     estimator.sample(mock_diff, nmocks=3, func_kwargs=dict(selection=selection))
     #estimator.sample(mock_diff, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
     wmat = estimator.mean(interp=False)
@@ -458,6 +458,8 @@ def test_window_matrix_estimator():
 
 if __name__ == '__main__':
 
+    test_window_matrix_estimator()
+    exit()
     test_box_pk()
     test_box_wmat()
     test_survey_pk()

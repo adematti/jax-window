@@ -134,7 +134,7 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
         state = dict(primals=[], tangents=np.zeros((observable.size, theory.size), dtype=float), aux=[])
 
         def callback(iproj, ix, primals, tangents, aux, state=state):
-            state['primals'] = primals
+            state['primals'].append(primals)
             state['tangents'][_ravel_index(observable, iproj=iproj, ix=ix)] += tangents
             state['aux'].append(aux)
 
@@ -142,6 +142,7 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     if iprojs is Ellipsis: iprojs = list(range(len(theory.projs)))
     nsplits = (len(iprojs) + batchs[0] - 1) // batchs[0]
     splits_iprojs = [iprojs[i * len(iprojs) // nsplits:(i + 1) * len(iprojs) // nsplits] for i in range(nsplits)]
+    ixs = [np.arange(len(xx))[indices[1]] if iproj in iprojs else [] for iproj, xx in enumerate(observable._x)]
 
     def func_aux(value, **kw):
         th = theory.clone(value=value)
@@ -166,12 +167,10 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     def get_basis(iprojs, ix):
         return jnp.array([zeros.at[_ravel_index(observable, iproj=iiproj, ix=iix)].set(1.) for iiproj in iprojs for iix in ix])
 
-    total = sum(len(indices[1]) if indices[1] is not Ellipsis else len(observable._x[iproj]) for iproj in iprojs) * nmocks
+    total = sum(len(ix) for ix in ixs) * nmocks
     t = tqdm(total=total)
     for iprojs in splits_iprojs:
-        ix = indices[1]
-        if ix is Ellipsis:
-            ix = list(range(len(observable._x[iprojs[0]])))
+        ix = ixs[iprojs[0]]
         nsplits = (len(ix) + batchs[1] - 1) // batchs[1]
         splits_ix = [ix[i * len(ix) // nsplits:(i + 1) * len(ix) // nsplits] for i in range(nsplits)]
         for ix in splits_ix:
@@ -189,9 +188,8 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     return state
 
 
-def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis), batchs=1, callback=None, func_kwargs=None):
+def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis), batchs=1, callback=None, func_kwargs=None, linear=False):
     from tqdm import tqdm
-
     if np.ndim(batchs) == 0: batchs = (1, batchs)
     kw = dict(func_kwargs or {})
     run_mocks = nmocks is not None
@@ -210,7 +208,7 @@ def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
         state = dict(primals=[], tangents=np.zeros((observable.size, theory.size), dtype=float), aux=[])
 
         def callback(iproj, ix, primals, tangents, aux, state=state):
-            state['primals'] = primals
+            state['primals'].append(primals)
             state['tangents'][..., _ravel_index(theory, iproj=iproj, ix=ix)] += tangents.T
             state['aux'].append(aux)
 
@@ -218,6 +216,7 @@ def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     if iprojs is Ellipsis: iprojs = list(range(len(theory.projs)))
     nsplits = (len(iprojs) + batchs[0] - 1) // batchs[0]
     splits_iprojs = [iprojs[i * len(iprojs) // nsplits:(i + 1) * len(iprojs) // nsplits] for i in range(nsplits)]
+    ixs = [np.arange(len(xx))[indices[1]] if iproj in iprojs else [] for iproj, xx in enumerate(theory._x)]
 
     def func_aux(value, **kw):
         th = theory.clone(value=value)
@@ -229,21 +228,23 @@ def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
         return observable, aux
 
     def jvp(tangent, **kw):
-        return jax.vmap(lambda tangent: jax.jvp(partial(func_aux, **kw), (theory.view(),), (tangent,), has_aux=True), in_axes=0)(tangent)
+        if linear:
+            toret = jax.vmap(lambda tangent: (observable.view().real,) + func_aux(tangent * (1 + 1e-9), **kw), in_axes=0)(tangent)
+        else:
+            toret = jax.vmap(lambda tangent: jax.jvp(partial(func_aux, **kw), (theory.view(),), (tangent,), has_aux=True), in_axes=0)(tangent)
+        return (toret[0][0],) + toret[1:]
 
     jvp = jax.jit(jvp)
 
     zeros = jnp.zeros_like(theory.view())
 
     def get_basis(iprojs, ix):
-        return jnp.array([zeros.at[_ravel_index(theory, iproj=iiproj, ix=iix)].set(1.) for iiproj in iprojs for iix in ix])
+        return jnp.array([zeros.at[_ravel_index(theory, iproj=iproj, ix=iix)].set(1.) for iproj in iprojs for iix in ix])
 
-    total = sum(len(indices[1]) if indices[1] is not Ellipsis else len(theory._x[iproj]) for iproj in iprojs) * nmocks
+    total = sum(len(ix) for ix in ixs) * nmocks
     t = tqdm(total=total)
     for iprojs in splits_iprojs:
-        ix = indices[1]
-        if ix is Ellipsis:
-            ix = list(range(len(theory._x[iprojs[0]])))
+        ix = ixs[iprojs[0]]
         nsplits = (len(ix) + batchs[1] - 1) // batchs[1]
         splits_ix = [ix[i * len(ix) // nsplits:(i + 1) * len(ix) // nsplits] for i in range(nsplits)]
         for ix in splits_ix:
@@ -328,7 +329,7 @@ class WindowMatrixEstimator(object):
         if self.observable is None:
             self.observable = observable
             self.reset()
-        batch_jac = batch_jacfwd if mode == 'fwd' else batch_jacrev
+        batch_jac = partial(batch_jacfwd, linear=True) if mode == 'fwd' else batch_jacrev
         state = batch_jac(func, self.theory, batchs=batchs, func_kwargs=func_kwargs, **kwargs)
         self.wmat_cv = state['tangents']
         self.observable_cv = state['primals'][0]
@@ -363,33 +364,47 @@ class WindowMatrixEstimator(object):
 
     def mean(self, interp=False, **kwargs):
         if interp:
-            wmat = np.zeros_like(self.wmat_wsum)
+            wmat = self.wmat_wsum / np.where(self.wmat_nsum == 0, 1, self.wmat_nsum)
             from scipy import interpolate
             # x is observable.x, y is theory.x - x, z is wmat
             for ipo, po in enumerate(self.observable.projs):
                 for ipt, pt in enumerate(self.theory.projs):
-                    idx = _ravel_index(self.observable, ix=Ellipsis, iproj=ipo), _ravel_index(self.theory, ix=Ellipsis, iproj=ipt)
-                    idx = tuple(slice(idx[0], idx[-1] + 1) for idx in idx)
-                    scale = np.diff(np.quantile(self.wmat_wsum[idx], q=[0.05, 0.95]))[0]
-                    x, y, z, w = [], [], [], []
+                    x, y, z = [], [], []
                     for ixo, xo in enumerate(self.observable.x(projs=po)):
                         for ixt, xt in enumerate(self.theory.x(projs=pt)):
                             idx = _ravel_index(self.observable, ix=ixo, iproj=ipo), _ravel_index(self.theory, ix=ixt, iproj=ipt)
                             if self.wmat_nsum[idx] > 0:
                                 x.append(xo)
                                 y.append(xt - xo)
-                                z.append(self.wmat_wsum[idx] / self.wmat_nsum[idx])
-                                w.append(1. / scale * jnp.sqrt(1. * self.wmat_nsum[idx]))
-                    tck = interpolate.bisplrep(x, y, z, w=w, **kwargs)
+                                z.append(wmat[idx])
+                    interp = interpolate.LinearNDInterpolator(np.column_stack([x, y]), z, fill_value=0., rescale=False)
                     for ixo, xo in enumerate(self.observable.x(projs=po)):
                         idx = _ravel_index(self.observable, ix=ixo, iproj=ipo), _ravel_index(self.theory, ix=Ellipsis, iproj=ipt)
-                        wmat[idx] = interpolate.bisplev(xo, self.theory.x(projs=pt) - xo, tck)
+                        wmat[idx] = interp(xo, self.theory.x(projs=pt) - xo)
         else:
-            wmat = self.wmat_wsum / self.wmat_nsum
+            wmat = self.wmat_wsum / np.where(self.wmat_nsum == 0, 1, self.wmat_nsum)
         wmat += self.wmat_cv
-        observable = self.observable.clone(value=np.mean(self.observable_samples, axis=0) + self.observable_cv)
+        value = np.mean(self.observable_samples, axis=0) if self.observable_samples else 0
+        value += self.observable_cv
+        observable = self.observable.clone(value=value)
         return WindowMatrix(observable=observable, theory=self.theory, value=wmat)
 
-    def std(self):
-        std = np.array([np.std(wt, ddof=1) for wt in self.wmat_theory_samples])
-        return self.observable.clone(value=std)
+    def std(self, interp=False, std_on_mean=False):
+        std = []
+        for wt in self.wmat_theory_samples:
+            if len(wt):
+                std.append(np.std(wt, ddof=1) / (np.sqrt(len(wt)) if std_on_mean else 1.))
+            else:
+                std.append(np.nan)
+        std = np.array(std)
+        toret = self.observable.clone(value=std)
+        if interp:
+            std = []
+            for iproj, proj in enumerate(toret.projs):
+                x, v = toret._x[iproj], toret._value[iproj]
+                if not np.isnan(v).all():
+                    mask = ~np.isnan(v)
+                    v = np.interp(x, x[mask], v[mask], left=0., right=0.)
+                std.append(v)
+            toret = toret.clone(value=std)
+        return toret
