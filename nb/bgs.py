@@ -9,6 +9,7 @@ from jax import random
 from cosmoprimo.fiducial import DESI
 from jaxpower import (RealMeshField, ParticleField, FKPField,
 compute_mesh_power, compute_fkp_power, generate_anisotropic_gaussian_mesh, compute_normalization, setup_logging, utils)
+from jaxpower.utils import MemoryMonitor
 
 
 ells = (0, 2, 4)
@@ -138,10 +139,12 @@ def estimate_window():
         # Multiply Gaussian field with survey selection function, then compute power spectrum
         norm = compute_normalization(selection, selection)
         poles = make_callable(poles)
+        los = 'firstpoint'
         if los == 'local': poles = (poles, los)  # local line-of-sight
         return compute_mean_mesh_power(selection, theory=poles, edges=edges, ells=ells, los={'local': 'firstpoint'}.get(los, los)).clone(norm=norm)
     
     # Difference: mock - control variate power spectrum
+    ells = (0, 2, 4)
     def mock_survey(theory, selection, with_cv=True, los='local', seed=42, unitary_amplitude=True):
         mesh = generate_anisotropic_gaussian_mesh(make_callable(theory), los=los, seed=seed,
                                                   unitary_amplitude=unitary_amplitude, **selection.attrs)
@@ -154,18 +157,31 @@ def estimate_window():
         return power
 
     if False:
-        get_pk = lambda pkin, **kwargs: mock_survey(pkin, selection, with_cv=False, unitary_amplitude=False, **kwargs)
+        def mock_survey(theory, selection, with_cv=True, los='local', seed=42, unitary_amplitude=False):
+            mesh = generate_anisotropic_gaussian_mesh(make_callable(theory), los=los, seed=seed,
+                                                     unitary_amplitude=unitary_amplitude, **selection.attrs)
+            mesh = mesh * selection
+            mesh = mesh.r2c()
+            return (mesh * mesh.conj()).sum()
+
+    if True:
+        get_pk = lambda pkin, *args, **kwargs: mock_survey(pkin, *args, with_cv=False, unitary_amplitude=False, **kwargs)
         get_pk = jax.jit(get_pk)
-        
+
         from tqdm import trange
         pks_ic = []
-        for imock in trange(10):
-            seed = random.key(2 * imock + 1)
-            pks_ic.append(get_pk(theory, seed=seed))
+        with MemoryMonitor() as mem:
+            for imock in trange(4):
+                seed = random.key(2 * imock + 1)
+                pks_ic.append(get_pk(theory, selection, seed=seed))
+                #pks_ic.append(get_pk(selection))
+                jax.block_until_ready(pks_ic[-1])
+                mem()
+        #exit()
 
     estimator_cv_sparse = WindowMatrixEstimator(theory=theory)
     # Compute control variate
-    estimator_cv_sparse.cv(mean_survey, func_kwargs=dict(selection=selection))
+    estimator_cv_sparse.cv(mean_survey, func_kwargs=dict(selection=selection), jit=False)
     # Sample
     nmocks = 25
     estimator_cv_sparse.sample(partial(mock_survey, with_cv=True), nmocks=nmocks,
@@ -185,10 +201,10 @@ def estimate_window():
 
 if __name__ == '__main__':
 
-    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1.' # NOTE: jax preallocates GPU (default 75%)
+    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.95' # NOTE: jax preallocates GPU (default 75%)
 
     setup_logging()
     utils.mkdir(data_dir)
-    save_selection_mesh()
+    #save_selection_mesh()
     #fit_mock_power(plot=True)
     estimate_window()

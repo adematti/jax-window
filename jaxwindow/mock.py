@@ -112,7 +112,7 @@ def _ravel_index(observable, iproj=0, ix=Ellipsis):
     return sum(sizes[:iproj]) + (np.arange(sizes[iproj]) if ix is Ellipsis else np.array(ix))
 
 
-def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis), batchs=1, callback=None, func_kwargs=None):
+def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis), batchs=1, callback=None, func_kwargs=None, jit=True):
     from tqdm import tqdm
 
     if np.ndim(batchs) == 0: batchs = (1, batchs)
@@ -160,7 +160,8 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
         #print(tangent)
         return tmp[:1] + tangent + tmp[2:]
 
-    vjp = jax.jit(vjp)
+    if jit:
+        vjp = jax.jit(vjp)
 
     zeros = jnp.zeros_like(observable.view().real)
 
@@ -179,6 +180,7 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
                     seed2, seed = random.split(seed)
                     kw.update(seed=seed2)
                 res = vjp(get_basis(iprojs, ix), **kw)
+                jax.block_until_ready(res)
                 for iproj in iprojs:
                     tmp = list(res)
                     tmp[1] = tmp[1].reshape(len(iprojs), len(ix), *tmp[1].shape[1:])[iproj]
@@ -188,7 +190,7 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     return state
 
 
-def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis), batchs=1, callback=None, func_kwargs=None, linear=False):
+def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis), batchs=1, callback=None, func_kwargs=None, linear=False, jit=True):
     from tqdm import tqdm
     if np.ndim(batchs) == 0: batchs = (1, batchs)
     kw = dict(func_kwargs or {})
@@ -228,13 +230,19 @@ def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
         return observable, aux
 
     def jvp(tangent, **kw):
+        func_aux2 = lambda tangent: (observable.view().real,) + func_aux(tangent * (1 + 1e-9), **kw)
         if linear:
-            toret = jax.vmap(lambda tangent: (observable.view().real,) + func_aux(tangent * (1 + 1e-9), **kw), in_axes=0)(tangent)
+            if tangent.shape[0] == 1:
+                toret = func_aux2(tangent[0])
+                toret = tuple(tmp[None, ...] for tmp in toret[:2]) + toret[2:]
+            else:
+                toret = jax.vmap(func_aux2, in_axes=0)(tangent)
         else:
             toret = jax.vmap(lambda tangent: jax.jvp(partial(func_aux, **kw), (theory.view(),), (tangent,), has_aux=True), in_axes=0)(tangent)
         return (toret[0][0],) + toret[1:]
 
-    jvp = jax.jit(jvp)
+    if jit:
+        jvp = jax.jit(jvp)
 
     zeros = jnp.zeros_like(theory.view())
 
@@ -253,6 +261,7 @@ def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
                     seed2, seed = random.split(seed)
                     kw.update(seed=seed2)
                 res = jvp(get_basis(iprojs, ix), **kw)
+                jax.block_until_ready(res)
                 for iproj in iprojs:
                     tmp = list(res)
                     tmp[1] = tmp[1].reshape(len(iprojs), len(ix), *tmp[1].shape[1:])[iproj]
@@ -334,7 +343,7 @@ class WindowMatrixEstimator(object):
         self.wmat_cv = state['tangents']
         self.observable_cv = state['primals'][0]
 
-    def sample(self, func, mode='rev', seed=random.key(42), nmocks=25, indices=(Ellipsis, Ellipsis), batchs=1, func_kwargs=None):
+    def sample(self, func, mode='rev', seed=random.key(42), nmocks=25, indices=(Ellipsis, Ellipsis), batchs=1, func_kwargs=None, **kwargs):
         if self.observable is None:
             self.observable = func(self.theory, seed=seed, **(func_kwargs or {}))
             self.reset()
@@ -360,7 +369,7 @@ class WindowMatrixEstimator(object):
                     self.wmat_theory_samples[idx].append(tangent.dot(self.theory.view()))
                 self.observable_samples.append(primals)
 
-        batch_jac(func, self.theory, seed=seed, nmocks=nmocks, indices=indices, batchs=batchs, callback=callback, func_kwargs=func_kwargs)
+        batch_jac(func, self.theory, seed=seed, nmocks=nmocks, indices=indices, batchs=batchs, callback=callback, func_kwargs=func_kwargs, **kwargs)
 
     def mean(self, interp=False, **kwargs):
         if interp:
