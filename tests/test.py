@@ -439,7 +439,7 @@ def test_window_matrix_estimator():
         return {proj: get_fun(proj) for proj in theory.projs}
 
     def mock_mean(theory, selection, los='x'):
-        return compute_mean_mesh_power(selection, theory=make_callable(theory), edges=edges, los=los, ells=ells)
+        return compute_mean_mesh_power(selection, theory=[make_callable(th) for th in theory], edges=edges, los=los, ells=ells, pbar=True)
 
     def mock_diff(theory, selection, los='x', seed=42, unitary_amplitude=True):
         mesh = generate_anisotropic_gaussian_mesh(make_callable(theory), los=los, seed=seed,

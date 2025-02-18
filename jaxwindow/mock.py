@@ -112,6 +112,15 @@ def _ravel_index(observable, iproj=0, ix=Ellipsis):
     return sum(sizes[:iproj]) + (np.arange(sizes[iproj]) if ix is Ellipsis else np.array(ix))
 
 
+def _get_index(observable, indices, ravel=False):
+    iprojs = indices[0]
+    if iprojs is Ellipsis: iprojs = list(range(len(observable.projs)))
+    ixs = [np.arange(len(xx))[indices[1]] if iproj in iprojs else np.arange(0) for iproj, xx in enumerate(observable._x)]
+    if ravel:
+        return np.concatenate([_ravel_index(observable, iproj=iproj, ix=ix) for iproj, ix in enumerate(ixs)])
+    return ixs
+
+
 def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis), batchs=1, callback=None, func_kwargs=None, jit=True):
     from tqdm import tqdm
 
@@ -138,12 +147,6 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
             state['tangents'][_ravel_index(observable, iproj=iproj, ix=ix)] += tangents
             state['aux'].append(aux)
 
-    iprojs = indices[0]
-    if iprojs is Ellipsis: iprojs = list(range(len(theory.projs)))
-    nsplits = (len(iprojs) + batchs[0] - 1) // batchs[0]
-    splits_iprojs = [iprojs[i * len(iprojs) // nsplits:(i + 1) * len(iprojs) // nsplits] for i in range(nsplits)]
-    ixs = [np.arange(len(xx))[indices[1]] if iproj in iprojs else [] for iproj, xx in enumerate(observable._x)]
-
     def func_aux(value, **kw):
         th = theory.clone(value=value)
         observable = func(th, **kw)
@@ -168,6 +171,10 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     def get_basis(iprojs, ix):
         return jnp.array([zeros.at[_ravel_index(observable, iproj=iiproj, ix=iix)].set(1.) for iiproj in iprojs for iix in ix])
 
+    ixs = _get_index(observable, indices, ravel=False)
+    iprojs = [i for i, ix in enumerate(ixs) if len(ix)]
+    nsplits = (len(iprojs) + batchs[0] - 1) // batchs[0]
+    splits_iprojs = [iprojs[i * len(iprojs) // nsplits:(i + 1) * len(iprojs) // nsplits] for i in range(nsplits)]
     total = sum(len(ix) for ix in ixs) * nmocks
     t = tqdm(total=total)
     for iprojs in splits_iprojs:
@@ -214,12 +221,6 @@ def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
             state['tangents'][..., _ravel_index(theory, iproj=iproj, ix=ix)] += tangents.T
             state['aux'].append(aux)
 
-    iprojs = indices[0]
-    if iprojs is Ellipsis: iprojs = list(range(len(theory.projs)))
-    nsplits = (len(iprojs) + batchs[0] - 1) // batchs[0]
-    splits_iprojs = [iprojs[i * len(iprojs) // nsplits:(i + 1) * len(iprojs) // nsplits] for i in range(nsplits)]
-    ixs = [np.arange(len(xx))[indices[1]] if iproj in iprojs else [] for iproj, xx in enumerate(theory._x)]
-
     def func_aux(value, **kw):
         th = theory.clone(value=value)
         observable = func(th, **kw)
@@ -249,6 +250,11 @@ def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     def get_basis(iprojs, ix):
         return jnp.array([zeros.at[_ravel_index(theory, iproj=iproj, ix=iix)].set(1.) for iproj in iprojs for iix in ix])
 
+    ixs = _get_index(theory, indices, ravel=False)
+    iprojs = [i for i, ix in enumerate(ixs) if len(ix)]
+    nsplits = (len(iprojs) + batchs[0] - 1) // batchs[0]
+    splits_iprojs = [iprojs[i * len(iprojs) // nsplits:(i + 1) * len(iprojs) // nsplits] for i in range(nsplits)]
+    total = sum(len(ix) for ix in ixs) * nmocks
     total = sum(len(ix) for ix in ixs) * nmocks
     t = tqdm(total=total)
     for iprojs in splits_iprojs:
@@ -333,15 +339,31 @@ class WindowMatrixEstimator(object):
         state = state[()]
         return cls.from_state(state)
 
-    def cv(self, func, mode='fwd', batchs=1, func_kwargs=None, **kwargs):
-        observable = func(self.theory, **(func_kwargs or {}))
-        if self.observable is None:
-            self.observable = observable
-            self.reset()
-        batch_jac = partial(batch_jacfwd, linear=True) if mode == 'fwd' else batch_jacrev
-        state = batch_jac(func, self.theory, batchs=batchs, func_kwargs=func_kwargs, **kwargs)
-        self.wmat_cv = state['tangents']
-        self.observable_cv = state['primals'][0]
+    def cv(self, func, mode='loop', batchs=1, func_kwargs=None, indices=(Ellipsis, Ellipsis), **kwargs):
+        func_kwargs = func_kwargs or {}
+        if mode == 'loop':
+            observable = func([self.theory], **func_kwargs)[0]
+            if self.observable is None:
+                self.observable = observable
+                self.reset()
+            zeros = jnp.zeros_like(self.theory.view())
+            ixs = _get_index(observable, indices, ravel=True)
+            basis = [self.theory.clone(value=zeros.at[idx].set(1.) + 1e-9) for idx in ixs]
+            tangents = func(basis, **(func_kwargs or {}))
+            tangents = jnp.concatenate([tangent.view().real[..., None] for tangent in tangents], axis=-1)
+            self.wmat_cv = np.zeros((observable.size, self.theory.size), dtype=float)
+            self.wmat_cv[..., ixs] = tangents
+        else:
+            observable = func(self.theory, **func_kwargs)
+            if self.observable is None:
+                self.observable = observable
+                self.reset()
+            batch_jac = partial(batch_jacfwd, linear=True) if mode == 'fwd' else batch_jacrev
+            state = batch_jac(func, self.theory, batchs=batchs, func_kwargs=func_kwargs, **kwargs)
+            self.wmat_cv = state['tangents']
+            self.observable_cv = state['primals'][0]
+        self.observable_cv = observable.view()
+
 
     def sample(self, func, mode='rev', seed=random.key(42), nmocks=25, indices=(Ellipsis, Ellipsis), batchs=1, func_kwargs=None, **kwargs):
         if self.observable is None:
