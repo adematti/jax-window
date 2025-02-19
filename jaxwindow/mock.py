@@ -159,7 +159,10 @@ def batch_jacrev(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     def vjp(tangent, **kw):
         tmp = jax.vjp(partial(func_aux, **kw), theory.view(), has_aux=True)
         vjp_fun = tmp[1]
-        tangent = jax.vmap(vjp_fun, in_axes=0)(tangent)
+        if tangent.shape[0] == 1:
+            tangent = (vjp_fun(tangent[0])[0][None, ...],)
+        else:
+            tangent = jax.vmap(vjp_fun, in_axes=0)(tangent)
         #print(tangent)
         return tmp[:1] + tangent + tmp[2:]
 
@@ -343,11 +346,12 @@ class WindowMatrixEstimator(object):
         func_kwargs = func_kwargs or {}
         if mode == 'loop':
             observable = func([self.theory], **func_kwargs)[0]
+            #observable = jax.jit(partial(func, **func_kwargs))([self.theory])[0]
             if self.observable is None:
                 self.observable = observable
                 self.reset()
             zeros = jnp.zeros_like(self.theory.view())
-            ixs = _get_index(observable, indices, ravel=True)
+            ixs = _get_index(self.theory, indices, ravel=True)
             basis = [self.theory.clone(value=zeros.at[idx].set(1.) + 1e-9) for idx in ixs]
             tangents = func(basis, **(func_kwargs or {}))
             tangents = jnp.concatenate([tangent.view().real[..., None] for tangent in tangents], axis=-1)
