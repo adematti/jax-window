@@ -1,1 +1,1 @@
-from .window import batch_jacrev, batch_jacfwd, WindowMatrixEstimator
+from .window import batch_jacrev, batch_jacfwd, WindowMatrixEstimator, generate_acceptable_poles

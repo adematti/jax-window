@@ -69,10 +69,13 @@ def test_box_wmat():
     utils.savefig(dirname / 'box_wmat.png')
 
 
-def gaussian_survey(boxsize=2000., meshsize=128, boxcenter=0., size=int(1e6), seed=random.key(42), scale=0.03, paint=False):
+def gaussian_survey(boxsize=2000., meshsize=128, boxcenter=0., size=int(1e8), seed=random.key(42), scale=0.2, paint=False):
     # Generate Gaussian-distributed positions
-    positions = scale * boxsize * random.normal(seed, shape=(size, 3))
-    toret = ParticleField(positions + boxcenter, boxcenter=boxcenter, boxsize=boxsize, meshsize=meshsize)
+    positions = scale * random.normal(seed, shape=(size, 3))
+    bscale = 2. * scale  # cut at 2 sigmas
+    mask = jnp.all((positions > -bscale) & (positions < bscale), axis=-1)
+    positions = positions * boxsize + boxcenter
+    toret = ParticleField(positions, weights=1. * mask, boxcenter=boxcenter, boxsize=boxsize, meshsize=meshsize)
     if paint: toret = toret.paint(resampler='cic', interlacing=1, compensate=False)
     return toret
 
@@ -402,14 +405,14 @@ def test_bspline():
     plt.show()
 
 
-def test_window_matrix_estimator():
+def test_window_matrix_estimator(plot=True):
     from jaxpower import compute_mean_mesh_power, compute_mesh_window, BinnedStatistic
     from jaxwindow import WindowMatrixEstimator
     from cosmoprimo.fiducial import DESI
 
     cosmo = DESI(engine='eisenstein_hu_nowiggle')
     pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.)
-    kin = jnp.geomspace(1e-3, 1e1, 200)
+    kin = np.linspace(0.001, 0.2, 20)
     pkin = pk(kin) * (1. + 0.2 * np.sin(kin / 0.006))
     ells = (0, 2, 4)
 
@@ -419,15 +422,15 @@ def test_window_matrix_estimator():
     poles = [(1. + 2. / 3. * beta + 1. / 5. * beta ** 2) * pkb,
               0.8 * (4. / 3. * beta + 4. / 7. * beta ** 2) * pkb,
               8. / 35 * beta ** 2 * pkb]
-    theory = BinnedStatistic(x=(kin,) * len(ells), value=poles, projs=ells)
+    theory = BinnedStatistic(x=(kin,) * len(ells), value=poles[:len(ells)], projs=ells)
 
     boxsize, meshsize = 1000., 32
     edges = {'step': 0.01}
-    selection = gaussian_survey(boxsize=boxsize, meshsize=meshsize, boxcenter=0., paint=True)
+    selection = gaussian_survey(boxsize=boxsize, meshsize=meshsize, boxcenter=boxsize, paint=True)
     norm = compute_normalization(selection, selection)
     mod = 1. + 0.01 * (random.uniform(random.key(42), shape=selection.shape) - 0.5)  # modulation
 
-    for los in ['x', 'local']:
+    for los in ['x', 'local'][1:]:
 
         def apply_selection(mesh, selection, cv=False):
             if cv:
@@ -435,7 +438,7 @@ def test_window_matrix_estimator():
             return mesh * selection * mod
 
         def mock_mean(theory, selection):
-            return compute_mean_mesh_power(selection, theory=theory, edges=edges, los=los, ells=ells, pbar=True)
+            return compute_mean_mesh_power(selection, theory=theory, edges=edges, los={'local': 'firstpoint'}.get(los, los), ells=ells).clone(norm=norm)
 
         def mock_diff(theory, selection, seed=42, unitary_amplitude=True):
             mesh = generate_anisotropic_gaussian_mesh(theory, los=los, seed=seed,
@@ -444,12 +447,27 @@ def test_window_matrix_estimator():
             return toret[0].clone(value=toret[0].view() - toret[1].view())
 
         estimator = WindowMatrixEstimator(theory=theory)
-        estimator.cv(selection, func=partial(compute_mesh_window, edges=edges, los=los, ells=ells, pbar=True, buffer='_tmp', norm=norm), indices=(Ellipsis, list(range(5))))
-        estimator.sample(mock_diff, nmocks=3, func_kwargs=dict(selection=selection))
+        estimator.cv(selection, edges=edges, los=('firstpoint', {'local': 'firstpoint'}.get(los, los)), ells=ells, pbar=True, norm=norm, flags=('recompute',)) #, indices=(Ellipsis, list(range(5))))
+        #estimator.sample(mock_diff, nmocks=3, func_kwargs=dict(selection=selection))
         #estimator.sample(mock_diff, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
         wmat = estimator.mean(interp=False)
-        wmat = estimator.mean(interp=True)
+        #wmat = estimator.mean(interp=True)
         std = estimator.std()
+        observable = wmat.dot(theory.view(), return_type=None)
+
+        mean = mock_mean(theory, selection)
+        #observable = mean
+        if plot:
+            from matplotlib import pyplot as plt
+            ax = plt.gca()
+            for proj in theory.projs:
+                k = theory.x(projs=proj)
+                ax.plot(k, k * theory.view(projs=proj), color='k')
+                k = observable.x(projs=proj)
+                ax.plot(k, k * observable.view(projs=proj), color='C0')
+                ax.plot(k, k * mean.view(projs=proj), color='C1')
+            plt.savefig('tmp.png')
+            plt.show()
 
 
 if __name__ == '__main__':

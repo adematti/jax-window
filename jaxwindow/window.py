@@ -350,6 +350,9 @@ class WindowMatrixEstimator(object):
         edgesin = [self.theory._edges[iproj][np.append(ix, ix[-1] + 1)] for iproj, ix in enumerate(ixs) if ix.size][0]
         if isinstance(los, str) and los in ['firstpoint', 'endpoint']:
             ellsin = (ellsin, 'local')
+        if isinstance(los, tuple):
+            if los[0] == 'local': ellsin = (ellsin, 'local')
+            los = los[1]
         wmatrix = func(*meshs, edgesin=edgesin, ellsin=ellsin, los=los, **kwargs)
         ixs = _get_index(self.theory, indices, ravel=True)
         if self.observable is None:
@@ -400,10 +403,11 @@ class WindowMatrixEstimator(object):
                                 x.append(xo)
                                 y.append(xt - xo)
                                 z.append(wmat[idx])
-                    interp = interpolate.LinearNDInterpolator(np.column_stack([x, y]), z, fill_value=0., rescale=False)
-                    for ixo, xo in enumerate(self.observable.x(projs=po)):
-                        idx = _ravel_index(self.observable, ix=ixo, iproj=ipo), _ravel_index(self.theory, ix=Ellipsis, iproj=ipt)
-                        wmat[idx] = interp(xo, self.theory.x(projs=pt) - xo)
+                    if len(z):
+                        interp = interpolate.LinearNDInterpolator(np.column_stack([x, y]), z, fill_value=0., rescale=False)
+                        for ixo, xo in enumerate(self.observable.x(projs=po)):
+                            idx = _ravel_index(self.observable, ix=ixo, iproj=ipo), _ravel_index(self.theory, ix=Ellipsis, iproj=ipt)
+                            wmat[idx] = interp(xo, self.theory.x(projs=pt) - xo)
         else:
             wmat = self.wmat_wsum / np.where(self.wmat_nsum == 0, 1, self.wmat_nsum)
         wmat += self.wmat_cv

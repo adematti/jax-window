@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +40,7 @@ def get_selection_particles():
         positions.append(sky_to_cartesian(dist, catalog['RA'], catalog['DEC']))
         weights.append(catalog['WEIGHT'] * catalog['WEIGHT_FKP'])
     positions, weights = np.concatenate(positions, axis=0), np.concatenate(weights, axis=0)
-    particles = ParticleField(positions, weights=weights, meshsize=400, boxsize=4000.)
+    particles = ParticleField(positions, weights=weights, meshsize=350, boxsize=4000.)
     return particles
 
 
@@ -68,14 +69,14 @@ def get_desi_power(selection='box', klim=(0., np.inf, 0.001), ells=(0, 2, 4)):
     return k, np.mean(powers, axis=0), np.std(powers, axis=0) / nmocks**0.5
 
 
-def fit_mock_power(klim=(0.02, 0.1, 0.005), plot=False):
+def fit_mock_power(klim=(0.02, 0.1, 0.005), kmax=0.5, plot=False):
     pk_cosmo = cosmo.get_fourier().pk_interpolator(of='delta_cb').to_1d(z=0.)
     ko, mean, std = get_desi_power(selection='box', klim=klim, ells=ells)
     ratio0 = mean[0][-1] / pk_cosmo(ko[-1])
     power0 = ratio0 * pk_cosmo(ko)
 
     from jaxpower import BinnedStatistic
-    from jaxwindow.mock import generate_acceptable_poles
+    from jaxwindow import generate_acceptable_poles
 
     def func(ko, alpha1, alpha2):
         return np.ravel(generate_acceptable_poles(power0, alpha1=alpha1, alpha2=alpha2))
@@ -84,7 +85,7 @@ def fit_mock_power(klim=(0.02, 0.1, 0.005), plot=False):
     popt = curve_fit(func, ko, mean.ravel(), p0=[0.1, 1.], sigma=std.ravel())[0]
     popt[1] = min(popt[1], 0.99)  # < 1. to guarantee bijection
 
-    kin = jnp.geomspace(1e-4, 0.5, 500)
+    kin = jnp.arange(1e-4, kmax, 0.001)
     poles = jnp.array(generate_acceptable_poles(ratio0 * pk_cosmo(kin), alpha1=popt[0], alpha2=popt[1]))
     poles = BinnedStatistic(x=(kin,) * len(ells), value=tuple(poles), projs=ells)
 
@@ -109,7 +110,8 @@ def estimate_window():
     from jaxwindow import WindowMatrixEstimator
 
     selection = RealMeshField.load(get_fn(base='selection_mesh', ext='npz'))
-    theory = fit_mock_power()
+    knyq = selection.attrs.knyq.max()
+    theory = fit_mock_power(kmax=knyq * 1.1)
     theory.save(get_fn(base='theory'))
     edges = {'step': 0.005}
     los = 'local'
@@ -153,7 +155,7 @@ def estimate_window():
             mesh = mesh.r2c()
             return (mesh * mesh.conj()).sum()
 
-    if True:
+    if False:
         get_pk = lambda pkin, *args, **kwargs: mock_survey(pkin, *args, with_cv=False, unitary_amplitude=False, **kwargs)
         get_pk = jax.jit(get_pk)
 
@@ -170,7 +172,9 @@ def estimate_window():
 
     estimator_cv_sparse = WindowMatrixEstimator(theory=theory)
     # Compute control variate
-    estimator_cv_sparse.cv(partial(compute_mesh_window, edges=edges, los=los, ells=ells, pbar=True, buffer='_tmp', norm=norm))
+    nx = len(theory.x(projs=0))
+    estimator_cv_sparse.cv(selection, edges=edges, los=('local', {'local': 'firstpoint'}.get(los, los)), ells=ells, pbar=True, buffer=None, norm=norm, flags=('recompute',), indices=(Ellipsis, slice(nx // 4)))
+    estimator_cv_sparse.cv(selection, edges=edges, los=('local', {'local': 'firstpoint'}.get(los, los)), ells=ells, pbar=True, buffer=None, norm=norm, flags=('recompute',), indices=(Ellipsis, slice(nx // 4, nx)))
     # Sample
     nmocks = 25
     estimator_cv_sparse.sample(partial(mock_survey, with_cv=True), nmocks=nmocks,
@@ -190,10 +194,10 @@ def estimate_window():
 
 if __name__ == '__main__':
 
-    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.95' # NOTE: jax preallocates GPU (default 75%)
+    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1.' # NOTE: jax preallocates GPU (default 75%)
 
     setup_logging()
     utils.mkdir(data_dir)
-    #save_selection_mesh()
+    save_selection_mesh()
     #fit_mock_power(plot=True)
     estimate_window()
