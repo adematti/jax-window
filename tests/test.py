@@ -238,12 +238,9 @@ def test_anisotropic(npk=10):
               8. / 35 * beta ** 2 * pkb]
 
     def make_callable(poles):
-        toret = {}
         def get_fun(ill):
             return lambda k: jnp.interp(k, kin, poles[ill], left=0., right=0.)
-        for ill, ell in enumerate(ells):
-            toret[ell] = get_fun(ill)
-        return toret
+        return {ell: get_fun(ill) for ill, ell in enumerate(ells)}
 
     @partial(jax.jit, static_argnames=['los'])
     def mock(seed, los='x', unitary_amplitude=True):
@@ -406,7 +403,7 @@ def test_bspline():
 
 
 def test_window_matrix_estimator():
-    from jaxpower import compute_mean_mesh_power, BinnedStatistic
+    from jaxpower import compute_mean_mesh_power, compute_mesh_window, BinnedStatistic
     from jaxwindow import WindowMatrixEstimator
     from cosmoprimo.fiducial import DESI
 
@@ -427,33 +424,32 @@ def test_window_matrix_estimator():
     boxsize, meshsize = 1000., 32
     edges = {'step': 0.01}
     selection = gaussian_survey(boxsize=boxsize, meshsize=meshsize, boxcenter=0., paint=True)
+    norm = compute_normalization(selection, selection)
     mod = 1. + 0.01 * (random.uniform(random.key(42), shape=selection.shape) - 0.5)  # modulation
 
-    def apply_selection(mesh, selection, cv=False):
-        if cv:
-            return mesh * selection
-        return mesh * selection * mod
+    for los in ['x', 'local']:
 
-    def make_callable(theory):
-        def get_fun(proj): return lambda x: jnp.interp(x, theory.x(projs=proj), theory.view(projs=proj), left=0., right=0.)
-        return {proj: get_fun(proj) for proj in theory.projs}
+        def apply_selection(mesh, selection, cv=False):
+            if cv:
+                return mesh * selection
+            return mesh * selection * mod
 
-    def mock_mean(theory, selection, los='x'):
-        return compute_mean_mesh_power(selection, theory=[make_callable(th) for th in theory], edges=edges, los=los, ells=ells, pbar=True)
+        def mock_mean(theory, selection):
+            return compute_mean_mesh_power(selection, theory=theory, edges=edges, los=los, ells=ells, pbar=True)
 
-    def mock_diff(theory, selection, los='x', seed=42, unitary_amplitude=True):
-        mesh = generate_anisotropic_gaussian_mesh(make_callable(theory), los=los, seed=seed,
-                                                  unitary_amplitude=unitary_amplitude, **selection.attrs)
-        toret = [compute_mesh_power(apply_selection(mesh, selection, cv=cv), edges=edges, los=los, ells=ells) for cv in [False, True]]
-        return toret[0].clone(value=toret[0].view() - toret[1].view())
+        def mock_diff(theory, selection, seed=42, unitary_amplitude=True):
+            mesh = generate_anisotropic_gaussian_mesh(theory, los=los, seed=seed,
+                                                      unitary_amplitude=unitary_amplitude, **selection.attrs)
+            toret = [compute_mesh_power(apply_selection(mesh, selection, cv=cv), edges=edges, los={'local': 'firstpoint'}.get(los, los), ells=ells).clone(norm=norm) for cv in [False, True]]
+            return toret[0].clone(value=toret[0].view() - toret[1].view())
 
-    estimator = WindowMatrixEstimator(theory=theory)
-    estimator.cv(mock_mean, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
-    estimator.sample(mock_diff, nmocks=3, func_kwargs=dict(selection=selection))
-    #estimator.sample(mock_diff, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
-    wmat = estimator.mean(interp=False)
-    wmat = estimator.mean(interp=True)
-    std = estimator.std()
+        estimator = WindowMatrixEstimator(theory=theory)
+        estimator.cv(selection, func=partial(compute_mesh_window, edges=edges, los=los, ells=ells, pbar=True, buffer='_tmp', norm=norm), indices=(Ellipsis, list(range(5))))
+        estimator.sample(mock_diff, nmocks=3, func_kwargs=dict(selection=selection))
+        #estimator.sample(mock_diff, func_kwargs=dict(selection=selection), indices=(Ellipsis, list(range(5))))
+        wmat = estimator.mean(interp=False)
+        wmat = estimator.mean(interp=True)
+        std = estimator.std()
 
 
 if __name__ == '__main__':

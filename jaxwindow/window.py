@@ -280,6 +280,9 @@ def batch_jacfwd(func, theory, seed=42, nmocks=None, indices=(Ellipsis, Ellipsis
     return state
 
 
+from jaxpower import compute_mesh_window
+
+
 @dataclass
 class WindowMatrixEstimator(object):
 
@@ -296,7 +299,6 @@ class WindowMatrixEstimator(object):
         self.wmat_theory_samples = [[] for idx in range(self.observable.size)]
         self.observable_samples = []
         self.wmat_cv = self.wmat_wsum.copy()
-        self.observable_cv = np.zeros(self.observable.size, dtype=float)
 
     def clone(self, **kwargs):
         import copy
@@ -342,32 +344,18 @@ class WindowMatrixEstimator(object):
         state = state[()]
         return cls.from_state(state)
 
-    def cv(self, func, mode='loop', batchs=1, func_kwargs=None, indices=(Ellipsis, Ellipsis), **kwargs):
-        func_kwargs = func_kwargs or {}
-        if mode == 'loop':
-            observable = func([self.theory], **func_kwargs)[0]
-            #observable = jax.jit(partial(func, **func_kwargs))([self.theory])[0]
-            if self.observable is None:
-                self.observable = observable
-                self.reset()
-            zeros = jnp.zeros_like(self.theory.view())
-            ixs = _get_index(self.theory, indices, ravel=True)
-            basis = [self.theory.clone(value=zeros.at[idx].set(1.) + 1e-9) for idx in ixs]
-            tangents = func(basis, **(func_kwargs or {}))
-            tangents = jnp.concatenate([tangent.view().real[..., None] for tangent in tangents], axis=-1)
-            self.wmat_cv = np.zeros((observable.size, self.theory.size), dtype=float)
-            self.wmat_cv[..., ixs] = tangents
-        else:
-            observable = func(self.theory, **func_kwargs)
-            if self.observable is None:
-                self.observable = observable
-                self.reset()
-            batch_jac = partial(batch_jacfwd, linear=True) if mode == 'fwd' else batch_jacrev
-            state = batch_jac(func, self.theory, batchs=batchs, func_kwargs=func_kwargs, **kwargs)
-            self.wmat_cv = state['tangents']
-            self.observable_cv = state['primals'][0]
-        self.observable_cv = observable.view()
-
+    def cv(self, *meshs, func=compute_mesh_window, indices=(Ellipsis, Ellipsis), los='firstpoint', **kwargs):
+        ixs = _get_index(self.theory, indices, ravel=False)
+        ellsin = [self.theory.projs[iproj] for iproj, ix in enumerate(ixs) if ix.size]
+        edgesin = [self.theory._edges[iproj][np.append(ix, ix[-1] + 1)] for iproj, ix in enumerate(ixs) if ix.size][0]
+        if isinstance(los, str) and los in ['firstpoint', 'endpoint']:
+            ellsin = (ellsin, 'local')
+        wmatrix = func(*meshs, edgesin=edgesin, ellsin=ellsin, los=los, **kwargs)
+        ixs = _get_index(self.theory, indices, ravel=True)
+        if self.observable is None:
+            self.observable = wmatrix.observable
+            self.reset()
+        self.wmat_cv[..., ixs] = wmatrix.view()
 
     def sample(self, func, mode='rev', seed=random.key(42), nmocks=25, indices=(Ellipsis, Ellipsis), batchs=1, func_kwargs=None, **kwargs):
         if self.observable is None:
@@ -420,7 +408,7 @@ class WindowMatrixEstimator(object):
             wmat = self.wmat_wsum / np.where(self.wmat_nsum == 0, 1, self.wmat_nsum)
         wmat += self.wmat_cv
         value = np.mean(self.observable_samples, axis=0) if self.observable_samples else 0
-        value += self.observable_cv
+        value += self.wmat_cv.dot(self.theory.view())
         observable = self.observable.clone(value=value)
         return WindowMatrix(observable=observable, theory=self.theory, value=wmat)
 

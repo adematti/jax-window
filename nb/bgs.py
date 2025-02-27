@@ -105,17 +105,16 @@ def fit_mock_power(klim=(0.02, 0.1, 0.005), plot=False):
 
 def estimate_window():
     from functools import partial
-    from jaxpower import compute_mesh_power, compute_mean_mesh_power, compute_normalization
+    from jaxpower import compute_mesh_power, compute_mesh_window, compute_mean_mesh_power, compute_normalization
     from jaxwindow import WindowMatrixEstimator
 
     selection = RealMeshField.load(get_fn(base='selection_mesh', ext='npz'))
     theory = fit_mock_power()
     theory.save(get_fn(base='theory'))
     edges = {'step': 0.005}
-
-    def make_callable(theory):
-        def get_fun(proj): return lambda x: jnp.interp(x, theory.x(projs=proj), theory.view(projs=proj), left=0., right=None)
-        return {proj: get_fun(proj) for proj in theory.projs}
+    los = 'local'
+    ells = (0, 2, 4)
+    norm = compute_normalization(selection, selection)
 
     # Apply selection function
     def apply_selection(mesh, selection, cv=False):
@@ -134,21 +133,11 @@ def estimate_window():
             mesh -= bw[ibin].reshape(selection.shape) * selection
         return mesh
 
-    # Mean control variate power spectrum
-    def mean_survey(poles, selection, los='local'):
-        # Multiply Gaussian field with survey selection function, then compute power spectrum
-        norm = compute_normalization(selection, selection)
-        poles = make_callable(poles)
-        los = 'firstpoint'
-        if los == 'local': poles = (poles, los)  # local line-of-sight
-        return compute_mean_mesh_power(selection, theory=poles, edges=edges, ells=ells, los={'local': 'firstpoint'}.get(los, los)).clone(norm=norm)
-    
     # Difference: mock - control variate power spectrum
-    ells = (0, 2, 4)
-    def mock_survey(theory, selection, with_cv=True, los='local', seed=42, unitary_amplitude=True):
-        mesh = generate_anisotropic_gaussian_mesh(make_callable(theory), los=los, seed=seed,
+
+    def mock_survey(theory, selection, with_cv=True, seed=42, unitary_amplitude=True):
+        mesh = generate_anisotropic_gaussian_mesh(theory, los=los, seed=seed,
                                                   unitary_amplitude=unitary_amplitude, **selection.attrs)
-        norm = compute_normalization(selection, selection)
         kw = dict(edges=edges, los={'local': 'firstpoint'}.get(los, los), ells=ells)
         power = compute_mesh_power(apply_selection(mesh, selection, cv=False), **kw).clone(norm=norm)
         if with_cv:
@@ -157,8 +146,8 @@ def estimate_window():
         return power
 
     if False:
-        def mock_survey(theory, selection, with_cv=True, los='local', seed=42, unitary_amplitude=False):
-            mesh = generate_anisotropic_gaussian_mesh(make_callable(theory), los=los, seed=seed,
+        def mock_survey(theory, selection, with_cv=True, seed=42, unitary_amplitude=False):
+            mesh = generate_anisotropic_gaussian_mesh(theory, los=los, seed=seed,
                                                      unitary_amplitude=unitary_amplitude, **selection.attrs)
             mesh = mesh * selection
             mesh = mesh.r2c()
@@ -181,7 +170,7 @@ def estimate_window():
 
     estimator_cv_sparse = WindowMatrixEstimator(theory=theory)
     # Compute control variate
-    estimator_cv_sparse.cv(mean_survey, func_kwargs=dict(selection=selection), jit=False)
+    estimator_cv_sparse.cv(partial(compute_mesh_window, edges=edges, los=los, ells=ells, pbar=True, buffer='_tmp', norm=norm))
     # Sample
     nmocks = 25
     estimator_cv_sparse.sample(partial(mock_survey, with_cv=True), nmocks=nmocks,
