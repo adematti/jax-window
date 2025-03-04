@@ -88,6 +88,7 @@ def mock_survey(power, selection, unitary_amplitude=True, seed=random.key(42), *
     norm = compute_normalization(selection, selection)
     return compute_mesh_power(mesh * selection, edges=edges).clone(norm=norm)
 
+
 def mock_survey_noise(power, boxsize=2000., meshsize=128, size=int(1e6), seed=random.key(42), unitary_amplitude=True):
     # Generate Gaussian field
     seeds = random.split(seed, 4)
@@ -105,6 +106,7 @@ def mock_survey_noise(power, boxsize=2000., meshsize=128, size=int(1e6), seed=ra
     fkp = FKPField(data, randoms)
     power = compute_fkp_power(fkp, edges=edges, resampler='tsc', interlacing=3)
     return power
+
 
 def test_survey_pk():
     from cosmoprimo.fiducial import DESI
