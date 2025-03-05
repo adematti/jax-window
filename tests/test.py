@@ -475,7 +475,6 @@ def test_window_matrix_estimator(plot=True):
 if __name__ == '__main__':
 
     test_window_matrix_estimator()
-    exit()
     test_box_pk()
     test_box_wmat()
     test_survey_pk()
